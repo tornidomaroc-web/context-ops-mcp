@@ -1,16 +1,40 @@
 {
   "name": "context-ops-mcp",
   "version": "1.0.0",
-  "description": "",
-  "main": "src/index.ts",
+  "description": "Revenue diagnosis MCP tool — analyzes SaaS codebases for billing gaps, onboarding friction, and competitive readiness",
+  "main": "dist/index.js",
+  "bin": {
+    "context-ops-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
+    "prepare": "npm run build",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "mcp",
+    "saas",
+    "revenue",
+    "diagnosis",
+    "billing",
+    "onboarding",
+    "claude",
+    "ai"
+  ],
+  "author": "AboJad",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tornidomaroc-web/context-ops-mcp.git"
+  },
+  "homepage": "https://github.com/tornidomaroc-web/context-ops-mcp#readme",
   "type": "module",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

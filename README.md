@@ -24,6 +24,21 @@ Agents often need repository context without reading every file. ContextOps answ
 - [Node.js](https://nodejs.org/) 18+
 - npm
 
+## Installation
+
+```bash
+npx context-ops-mcp
+```
+
+Or install globally:
+
+```bash
+npm install -g context-ops-mcp
+```
+
+[![npm version](https://img.shields.io/npm/v/context-ops-mcp?color=red&logo=npm)](https://www.npmjs.com/package/context-ops-mcp)
+[![npm downloads](https://img.shields.io/npm/dm/context-ops-mcp?color=orange)](https://www.npmjs.com/package/context-ops-mcp)
+
 ## How to run locally
 
 ```bash
