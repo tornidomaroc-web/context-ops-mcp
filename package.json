@@ -18,16 +18,24 @@
     "prepare": "npm run build",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [
-    "mcp",
-    "saas",
-    "revenue",
-    "diagnosis",
-    "billing",
-    "onboarding",
-    "claude",
-    "ai"
-  ],
+"keywords": [
+  "mcp",
+  "model-context-protocol",
+  "saas",
+  "revenue",
+  "diagnosis",
+  "billing",
+  "onboarding",
+  "claude",
+  "cursor",
+  "windsurf",
+  "ai-agent",
+  "developer-tools",
+  "codebase-analysis",
+  "context-window",
+  "typescript",
+  "ai"
+]
   "author": "AboJad",
   "license": "MIT",
   "repository": {
