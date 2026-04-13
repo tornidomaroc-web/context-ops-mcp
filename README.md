@@ -1,9 +1,21 @@
-# context-ops-mcp
+<div align="center">
+
+<img src="https://capsule-render.vercel.app/api?type=waving&amp;color=0:0a0a0a,50:064e3b,100:10b981&amp;height=160&amp;section=header&amp;text=ContextOps%20MCP&amp;fontSize=48&amp;fontColor=ffffff&amp;fontAlignY=40&amp;desc=Revenue-aware%20repo%20context%20for%20AI%20agents&amp;descAlignY=62&amp;descColor=6ee7b7&amp;animation=fadeIn" width="100%"/>
+
+<br/>
+
+[![npm](https://img.shields.io/npm/v/context-ops-mcp?color=10b981&style=for-the-badge&logo=npm&logoColor=white)](https://www.npmjs.com/package/context-ops-mcp)
+[![downloads](https://img.shields.io/npm/dm/context-ops-mcp?color=064e3b&style=for-the-badge&logo=npm&logoColor=white)](https://www.npmjs.com/package/context-ops-mcp)
+[![Claude AI](https://img.shields.io/badge/MCP%20Compatible-Claude-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](https://anthropic.com)
+[![TypeScript](https://img.shields.io/badge/TypeScript-100%25-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://github.com/tornidomaroc-web/context-ops-mcp)
+[![Beta](https://img.shields.io/badge/Status-Beta-BA7517?style=for-the-badge)](https://github.com/tornidomaroc-web/context-ops-mcp)
+
+</div>
+
+---
 
 > **MCP server that gives your AI agent a structured, revenue-aware view of any SaaS codebase — in seconds.**
 
-[![npm version](https://img.shields.io/npm/v/context-ops-mcp?color=red&logo=npm)](https://www.npmjs.com/package/context-ops-mcp)
-[![npm downloads](https://img.shields.io/npm/dm/context-ops-mcp?color=orange)](https://www.npmjs.com/package/context-ops-mcp)
 [![license](https://img.shields.io/github/license/tornidomaroc-web/context-ops-mcp)](./LICENSE)
 
 ---
@@ -131,3 +143,7 @@ ContextOps is a navigation tool, not an oracle.
 ## License
 
 MIT © [tornidomaroc-web](https://github.com/tornidomaroc-web)
+
+<div align="center">
+<img src="https://capsule-render.vercel.app/api?type=waving&amp;color=0:0a0a0a,50:064e3b,100:10b981&amp;height=100&amp;section=footer&amp;animation=fadeIn" width="100%"/>
+</div>
