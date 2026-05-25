@@ -1,7 +1,7 @@
 {
   "name": "context-ops-mcp",
-  "version": "1.0.0",
-  "description": "Revenue diagnosis MCP tool — analyzes SaaS codebases for billing gaps, onboarding friction, and competitive readiness",
+  "version": "2.1.0",
+  "description": "MCP server that gives your AI coding agent a bounded map of an unfamiliar TypeScript SaaS repo: structure, entry points, risk-flagged files, and SaaS-shaped smell observations, without burning the context window on full-file reads.",
   "main": "dist/index.js",
   "bin": {
     "context-ops-mcp": "dist/index.js"
@@ -9,6 +9,7 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
@@ -16,37 +17,33 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "prepare": "npm run build",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --import tsx --test tests/smoke.test.ts tests/dogfood.test.ts tests/honesty.test.ts tests/v2_1.test.ts"
   },
-"keywords": [
-  "mcp",
-  "model-context-protocol",
-  "saas",
-  "revenue",
-  "diagnosis",
-  "billing",
-  "onboarding",
-  "claude",
-  "cursor",
-  "windsurf",
-  "ai-agent",
-  "developer-tools",
-  "codebase-analysis",
-  "context-window",
-  "typescript",
-  "ai"
-]
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "saas",
+    "claude",
+    "cursor",
+    "claude-code",
+    "ai-agent",
+    "developer-tools",
+    "codebase-orientation",
+    "context-window",
+    "typescript",
+    "ai"
+  ],
   "author": "AboJad",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tornidomaroc-web/context-ops-mcp.git"
+    "url": "git+https://github.com/tornidomaroc-web/context-ops-mcp.git"
   },
   "homepage": "https://github.com/tornidomaroc-web/context-ops-mcp#readme",
   "type": "module",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

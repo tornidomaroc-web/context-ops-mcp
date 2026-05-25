@@ -1,24 +1,32 @@
-# ContextOps — Outcomes for you (MVP)
+# context-ops-mcp: Outcomes for you
 
-## Before using ContextOps
+Built for the agency, fractional-CTO, or consultancy dev lead who just inherited an unfamiliar TypeScript SaaS repo and needs a credible triage map by Friday, working through Cursor or Claude Code.
 
-When you point a coding agent at a **large TypeScript repo** without a structured map, common patterns show up:
+## Before using context-ops-mcp
 
-- The agent **guesses where to look** — opens `src/` at random, searches by vibe, or pulls huge chunks into context.  
-- It **burns tokens** on long files, duplicate reads, or listing the same areas twice because it never built a stable mental model.  
-- It **edits the wrong module** — e.g. a helper when the bug is in wiring, or a UI file when the contract is in a shared type.  
-- It **misses boring but critical files** — `package.json`, `tsconfig`, env samples, or the real entry file.  
-- You get **trial and error**: run the agent, watch it wander, nudge it, repeat.  
+You open a client's repo cold. The agent has no map. Common patterns:
 
-None of that is hypothetical—it’s what “no map, full repo” usually feels like.
+- The agent **guesses where to look** in `src/`, searches by vibe, or dumps long files into context.
+- It **burns tokens** on duplicate reads and never builds a stable mental model of the SaaS surface area.
+- It **edits the wrong module** because it never noticed which files are central or sensitive.
+- It **misses the SaaS-shaped landmines** you need to call out in the deliverable: where billing wiring lives, which files touch auth, what risky deps are still in package.json.
+- You get stuck in **trial and error**: run the agent, watch it wander, nudge it, repeat.
 
-## After using ContextOps
+That is the default state of "no map, full repo, billing by the week."
+
+## After using context-ops-mcp
 
 Nothing becomes perfect. A few things **usually shift**:
 
-- The agent can **call tools first**—structure, shallow top-of-file signals, config names, entry guesses, a short list keyed to your **task string**, and a **risk pass** before big edits.  
-- Navigation becomes **stepwise**: layout → “what’s declared at the top” → “where might it start” → “what matches this task” → “what’s scary to touch.”  
-- You still **read code and run tests**, but the **first 10 minutes** are less random—fewer “search entire repo” loops and fewer surprise edits to central files.  
+- The agent can **call eight bounded tools first**, in roughly this order:
+  1. `get_project_structure` and `get_likely_config_files` to see the shape
+  2. `get_semantic_summary` for top-50-line export and function hints across every .ts and .json
+  3. `get_entry_points` for bootstrap and routing
+  4. `get_relevant_files_for_task` to rank candidates against your task string
+  5. `get_execution_plan_for_task` to merge entries, relevance, and risk into a step order
+  6. `get_risky_files` and `get_saas_smells` as guard rails before edits and as scaffolding for the client memo
+- Navigation becomes **stepwise** instead of vibe-driven: layout, then declared exports, then likely entries, then task-matched candidates, then risk and SaaS smells.
+- The **first hour on a new client repo** is less random. Fewer "search entire repo" loops. Fewer surprise edits to spine files. A starting outline for your triage memo already exists in the smell output.
 
 Improvement is **incremental**, not guaranteed every session.
 
@@ -26,22 +34,25 @@ Improvement is **incremental**, not guaranteed every session.
 
 | Before | After |
 |--------|--------|
-| Agent builds the map from scratch each time, often inconsistently | Agent can **import** a small, bounded map via MCP tools |
-| Long files and deep trees show up early in context | **50-line** caps on semantic-style reads push toward **headers and exports first** |
-| “Relevant files” is mostly search + luck | **Task string** + heuristics produce a **candidate list** (TypeScript-biased) |
-| Central or sensitive files get edited without ceremony | **Risky file** hints flag **some** high-impact paths—you decide |
-| Config and entry points are discovered late | **Likely config** + **entry heuristics** surface common **manifests and wiring** earlier |
+| Agent rebuilds the map from scratch each session | Agent imports a small, bounded map via 8 MCP tools |
+| Long files and deep trees show up early in context | 50-line caps on orientation reads push toward headers and exports first |
+| "Relevant files" is mostly search and luck | Task string plus heuristics produce a ranked candidate list |
+| Central or sensitive files get edited without ceremony | Risky file hints flag some high-impact paths before changes |
+| Config and entry points discovered late | Likely config and entry heuristics surface manifests and wiring early |
+| Billing, auth, and security context lives in your head | `get_saas_smells` returns file plus line tuples you can paste into the client memo |
 
 ## Concrete benefits
 
-- **Faster first read of the repo** — tree + top-of-file summaries + config names compress “where is everything?”  
-- **Fewer obviously wrong file edits** — task-ranked and entry hints steer away from pure guesswork  
-- **More targeted early changes** — smaller candidate sets and shallow reads before diving deep  
-- **Better awareness of risky areas** — explicit flags for paths that often matter when you break them  
+- **Faster first read of the repo.** Tree, top-of-file summaries, config names, and entry hints compress "where is everything?" into one tool sequence.
+- **Fewer obviously wrong file edits.** Task-ranked candidates and entry hints steer away from pure guesswork.
+- **More targeted early changes.** Smaller candidate sets and shallow reads before diving deep.
+- **Better awareness of risky areas.** Explicit flags for paths that often matter when you break them.
+- **SaaS-shaped scaffolding for client deliverables.** Billing, auth, security, debt, and dependency observations with file and line numbers. Not an audit. Not a verdict. Material you confirm and use in your own write-up.
 
 ## What does NOT magically improve
 
-- **Reasoning** — the model can still misunderstand requirements or pick the wrong fix among right files.  
-- **Correct code** — no tool here proves patches are right; **tests, types, and review** still decide.  
-- **Completeness** — heuristics **miss** symbols below the read window, **miss** languages, and **false-positive** risk.  
-- **Developer validation** — you still own the merge; ContextOps only **reduces blind wandering**, it doesn’t replace judgment.  
+- **Reasoning.** The model can still misunderstand requirements or pick the wrong fix among right files.
+- **Correct code.** No tool here proves patches are right. Tests, types, and review still decide.
+- **Completeness.** Heuristics miss symbols below the 50-line head, miss non-TypeScript languages, and false-positive on risk.
+- **The smell tool is observation, not audit.** `get_saas_smells` returns presence flags with file plus line. No /100 scores, no severity ranking, no hour estimates. You decide what matters.
+- **Developer validation.** You still own the merge and the client memo. context-ops-mcp only reduces blind wandering. It does not replace judgment.

@@ -1,8 +1,11 @@
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 
-/** Max lines read per file for semantic analysis (also used by the MCP tool). */
-export const SEMANTIC_LINE_LIMIT = 300;
+/** Head-of-file line cap for symbol extraction and orientation heuristics. */
+export const SEMANTIC_LINE_LIMIT = 50;
+
+/** Deeper line cap used by smell scans (security regex, debt markers). */
+export const SMELL_SCAN_LIMIT = 500;
 
 const fileCache = new Map<string, string[]>();
 
@@ -45,6 +48,38 @@ export async function readFirstLines(absPath: string, maxLines: number): Promise
     stream.destroy();
   }
   return lines;
+}
+
+/**
+ * Whole-file streaming pass that reports which lowercase keywords appear anywhere
+ * in the file. Exits early when every keyword has been seen. Used by the relevance
+ * heuristic to find code past the head-of-file read window.
+ */
+export async function streamFileForKeywords(
+  absPath: string,
+  keywords: string[]
+): Promise<Set<string>> {
+  const found = new Set<string>();
+  const needles = keywords.map((k) => k.toLowerCase());
+  if (needles.length === 0) return found;
+
+  const stream = createReadStream(absPath, { encoding: "utf8" });
+  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of rl) {
+      const lower = line.toLowerCase();
+      for (const kw of needles) {
+        if (!found.has(kw) && lower.includes(kw)) {
+          found.add(kw);
+        }
+      }
+      if (found.size === needles.length) break;
+    }
+  } finally {
+    rl.close();
+    stream.destroy();
+  }
+  return found;
 }
 
 function parseExportClause(clause: string): string[] {

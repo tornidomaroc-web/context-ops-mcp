@@ -1,18 +1,34 @@
-import { readdir } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   analyzeJsonLines,
   analyzeTypeScriptLines,
   readFirstLines,
   SEMANTIC_LINE_LIMIT,
+  SMELL_SCAN_LIMIT,
+  streamFileForKeywords,
 } from "./analyzer.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-export const IGNORED_DIRS = new Set(["node_modules", ".git", "dist"]);
+export const IGNORED_DIRS = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  ".next",
+  ".turbo",
+  ".svelte-kit",
+  ".vercel",
+  ".cache",
+  "coverage",
+  "build",
+  "out",
+]);
 
 export const MCP_SERVER_NAME = "context-ops-mcp";
-export const MCP_SERVER_VERSION = "1.0.0";
+export const MCP_SERVER_VERSION = "2.1.0";
+
+const toPosix = (p: string): string => p.split(path.sep).join("/");
 
 export type ProjectStructure = {
   root: string;
@@ -61,10 +77,10 @@ function runScanProjectStructure(rootDir: string): Promise<ProjectStructure> {
 
       if (entry.isDirectory()) {
         if (IGNORED_DIRS.has(entry.name)) continue;
-        directories.push(rel);
+        directories.push(toPosix(rel));
         await walk(abs, rel);
       } else {
-        files.push(rel);
+        files.push(toPosix(rel));
       }
     }
   }
@@ -74,7 +90,7 @@ function runScanProjectStructure(rootDir: string): Promise<ProjectStructure> {
     directories.sort();
     files.sort();
     return {
-      root: rootDir,
+      root: toPosix(rootDir),
       directories,
       files,
     };
@@ -99,7 +115,7 @@ function runCollectTsAndJsonFiles(rootDir: string): Promise<string[]> {
           entry.name.endsWith(".tsx") ||
           entry.name.endsWith(".json")
         ) {
-          out.push(rel);
+          out.push(toPosix(rel));
         }
       }
     }
@@ -133,7 +149,7 @@ function runCollectTsFiles(rootDir: string): Promise<string[]> {
         entry.isFile() &&
         (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx"))
       ) {
-        out.push(rel);
+        out.push(toPosix(rel));
       }
     }
   }
@@ -310,6 +326,19 @@ async function runFindRelevantFilesForTask(
       }
     }
 
+    const unmatched = kws.filter((k) => !matched.has(k));
+    if (unmatched.length > 0) {
+      try {
+        const wholeFileHits = await streamFileForKeywords(abs, unmatched);
+        for (const kw of wholeFileHits) {
+          score += 1;
+          matched.add(kw);
+        }
+      } catch {
+        /* skip — file became unreadable mid-scan */
+      }
+    }
+
     if (score > 0) {
       scored.push({
         file: posix,
@@ -344,7 +373,41 @@ type ExecutionPlanAvoidRow = { file: string; reason: string };
 type ExecutionPlanResult = {
   executionPlan: ExecutionPlanStep[];
   avoid: ExecutionPlanAvoidRow[];
+  truncated: {
+    entryPointsTotal: number;
+    entryPointsShown: number;
+    avoidTotal: number;
+    avoidShown: number;
+  };
 };
+
+/** Max entry-point steps surfaced in the plan. Above this, the rest is elided
+ * and reported via `truncated`. Tuned for agent attention: 15 + up to 10
+ * relevance-ranked files = ~25 plan steps fit on one screen. */
+const EXECUTION_PLAN_ENTRY_POINT_CAP = 15;
+
+/** Max avoid-list entries. Above this, the rest is elided and reported. */
+const EXECUTION_PLAN_AVOID_CAP = 30;
+
+/** Priority score for an entry point: higher = surfaced first when capped.
+ * Filename-anchored reasons (index.ts/app.ts/server.ts/main.ts) beat
+ * folder-only matches, which beat HTTP imports, which beat bootstrap cues.
+ * Within the same tier, shallower paths win, then alphabetical. */
+function entryPointPriority(file: string, reason: string): number {
+  let score = 0;
+  if (reason.includes("Possible application entry file")) score += 1000;
+  if (reason.includes("bootstrap")) score += 100;
+  if (reason.includes("express") || reason.includes("fastify") || reason.includes("http or https")) score += 50;
+  if (reason.includes("routes, api, or controllers")) score += 10;
+  const depth = file.split("/").length;
+  score -= depth;
+  return score;
+}
+
+/** Priority for a risky file: more risk markers in the reason = higher rank. */
+function riskyFilePriority(reason: string): number {
+  return reason.split(";").length;
+}
 
 type ShallowFileContext = {
   exports: string[];
@@ -403,7 +466,7 @@ function describeExportSurface(ctx: ShallowFileContext | null): string {
     chunks.push(`Declared-style functions near the top: ${sample}${extra} — often the units you extend or call.`);
   }
   if (chunks.length === 0) {
-    return "Few exports/functions in the first 50 lines; logic may live deeper (classes, nested declarations, or re-exports).";
+    return `Few exports/functions in the first ${SEMANTIC_LINE_LIMIT} lines; logic may live deeper (classes, nested declarations, or re-exports).`;
   }
   return chunks.join(" ");
 }
@@ -479,13 +542,24 @@ async function runExecutionPlanForTask(rootDir: string, task: string): Promise<E
     runFindRiskyFiles(rootDir),
   ]);
 
+  const entryPointsTotal = entryResult.entryPoints.length;
+  const avoidTotal = riskyResult.riskyFiles.length;
+
+  const prioritizedEntries = [...entryResult.entryPoints]
+    .sort((a, b) => {
+      const pa = entryPointPriority(a.file, a.reason);
+      const pb = entryPointPriority(b.file, b.reason);
+      return pb - pa || a.file.localeCompare(b.file);
+    })
+    .slice(0, EXECUTION_PLAN_ENTRY_POINT_CAP);
+
   const executionPlan: ExecutionPlanStep[] = [];
   const inPlan = new Set<string>();
   let stepNum = 1;
   let prevFile: string | null = null;
   let prevStem: string | null = null;
 
-  for (const ep of entryResult.entryPoints) {
+  for (const ep of prioritizedEntries) {
     if (inPlan.has(ep.file)) continue;
     inPlan.add(ep.file);
     const ctx = await loadShallowFileContext(rootDir, ep.file);
@@ -534,12 +608,25 @@ async function runExecutionPlanForTask(rootDir: string, task: string): Promise<E
     stepNum++;
   }
 
-  const avoid: ExecutionPlanAvoidRow[] = riskyResult.riskyFiles.map((r) => ({
-    file: r.file,
-    reason: r.reason,
-  }));
+  const avoid: ExecutionPlanAvoidRow[] = [...riskyResult.riskyFiles]
+    .sort((a, b) => {
+      const pa = riskyFilePriority(a.reason);
+      const pb = riskyFilePriority(b.reason);
+      return pb - pa || a.file.localeCompare(b.file);
+    })
+    .slice(0, EXECUTION_PLAN_AVOID_CAP)
+    .map((r) => ({ file: r.file, reason: r.reason }));
 
-  return { executionPlan, avoid };
+  return {
+    executionPlan,
+    avoid,
+    truncated: {
+      entryPointsTotal,
+      entryPointsShown: Math.min(entryPointsTotal, EXECUTION_PLAN_ENTRY_POINT_CAP),
+      avoidTotal,
+      avoidShown: Math.min(avoidTotal, EXECUTION_PLAN_AVOID_CAP),
+    },
+  };
 }
 
 const RISKY_PATH_MARKERS = [
@@ -786,7 +873,7 @@ async function runBuildSemanticSummary(rootDir: string): Promise<SemanticSummary
   const files: Record<string, SemanticFileEntry> = {};
 
   for (const rel of relPaths) {
-    const abs = path.join(rootDir, rel);
+    const abs = path.join(rootDir, rel.split("/").join(path.sep));
     let lines: string[] = [];
     try {
       lines = await readFirstLines(abs, SEMANTIC_LINE_LIMIT);
@@ -813,7 +900,7 @@ async function runBuildSemanticSummary(rootDir: string): Promise<SemanticSummary
   }
 
   return {
-    root: rootDir,
+    root: toPosix(rootDir),
     linesPerFile: SEMANTIC_LINE_LIMIT,
     ignoredDirectories: [...IGNORED_DIRS],
     fileCount: relPaths.length,
@@ -821,10 +908,227 @@ async function runBuildSemanticSummary(rootDir: string): Promise<SemanticSummary
   };
 }
 
-const server = new McpServer({
-  name: MCP_SERVER_NAME,
-  version: MCP_SERVER_VERSION,
-});
+// ─── SAAS SMELLS SCANNER ─────────────────────────────────────────────────────
+// Observation-only. No scores out of 100. No hour estimates. No severity ranking.
+// Each smell is a single (file, line, category, observation) tuple. The consumer
+// — an AI agent or a human reviewing — decides what's worth acting on.
+
+type SmellCategory =
+  | "billing"
+  | "auth"
+  | "security"
+  | "type-safety"
+  | "debt-marker"
+  | "dependency-risk";
+
+type Smell = {
+  category: SmellCategory;
+  file: string;
+  line: number | null;
+  observation: string;
+  snippet: string;
+};
+
+type SaasSmellsReport = {
+  rootDir: string;
+  lineCapPerFile: number;
+  totalSmells: number;
+  byCategory: Record<SmellCategory, number>;
+  smells: Smell[];
+  notes: string[];
+};
+
+const SECURITY_PATTERNS: ReadonlyArray<{ readonly pattern: RegExp; readonly observation: string }> = [
+  { pattern: /(?:password|passwd)\s*[:=]\s*["'][^"']{4,}["']/i, observation: "Hardcoded password string literal" },
+  { pattern: /(?:api[_-]?key|secret[_-]?key)\s*[:=]\s*["'][A-Za-z0-9_\-]{16,}["']/i, observation: "Hardcoded API key or secret literal" },
+  { pattern: /(?:sk-|sk_live_|pk_live_|rk_live_)[A-Za-z0-9]{20,}/, observation: "Stripe or OpenAI key pattern in source" },
+  { pattern: /\beval\s*\(/, observation: "eval() — arbitrary code execution" },
+  { pattern: /new\s+Function\s*\(/, observation: "new Function() — arbitrary code execution" },
+  { pattern: /dangerouslySetInnerHTML/, observation: "dangerouslySetInnerHTML — XSS vector if unsanitized" },
+  { pattern: /\.innerHTML\s*=/, observation: "Direct innerHTML write — XSS vector if unsanitized" },
+  { pattern: /(?:child_process|execSync)\b/, observation: "Shell execution — confirm inputs are sanitized" },
+  { pattern: /query\s*\+\s*["']|["']\s*\+\s*\w+.*(?:WHERE|FROM|INTO|SELECT)/i, observation: "String-concatenated SQL — possible injection" },
+  { pattern: /cors\(\s*\)/, observation: "cors() with no options — allows all origins" },
+  { pattern: /origin\s*:\s*["']\*["']/, observation: "Wildcard CORS origin" },
+  { pattern: /Math\.random\s*\(\s*\)/, observation: "Math.random() — not cryptographically secure" },
+];
+
+const DEBT_PATTERNS: ReadonlyArray<{ readonly pattern: RegExp; readonly category: SmellCategory; readonly observation: string }> = [
+  { pattern: /\/\/\s*FIXME/i, category: "debt-marker", observation: "FIXME marker" },
+  { pattern: /\/\/\s*HACK/i, category: "debt-marker", observation: "HACK marker" },
+  { pattern: /\/\/\s*XXX/i, category: "debt-marker", observation: "XXX marker" },
+  { pattern: /\/\/\s*TODO/i, category: "debt-marker", observation: "TODO marker" },
+  { pattern: /:\s*any\b/, category: "type-safety", observation: "'any' type annotation" },
+  { pattern: /\bas\s+any\b/, category: "type-safety", observation: "'as any' cast" },
+  { pattern: /@ts-ignore/, category: "type-safety", observation: "@ts-ignore suppression" },
+  { pattern: /@ts-nocheck/, category: "type-safety", observation: "@ts-nocheck (whole-file)" },
+];
+
+const BILLING_PATTERNS: ReadonlyArray<{ readonly pattern: RegExp; readonly observation: string }> = [
+  { pattern: /\bstripe\b/i, observation: "Stripe reference" },
+  { pattern: /\bpaddle\b/i, observation: "Paddle reference" },
+  { pattern: /\blemon[- _]?squeezy\b/i, observation: "Lemon Squeezy reference" },
+  { pattern: /\bwebhook\b/i, observation: "Webhook reference" },
+  { pattern: /\bsubscription\b/i, observation: "Subscription reference" },
+  { pattern: /\bcheckout\b/i, observation: "Checkout reference" },
+  { pattern: /\bpaywall\b/i, observation: "Paywall reference" },
+  { pattern: /\btrial\b/i, observation: "Trial reference" },
+];
+
+const AUTH_PATTERNS: ReadonlyArray<{ readonly pattern: RegExp; readonly observation: string }> = [
+  { pattern: /from\s+["']passport(?:\/[^"']+)?["']/, observation: "passport import" },
+  { pattern: /from\s+["']jsonwebtoken(?:\/[^"']+)?["']/, observation: "jsonwebtoken import" },
+  { pattern: /from\s+["']jose(?:\/[^"']+)?["']/, observation: "jose import" },
+  { pattern: /from\s+["']bcrypt(?:js)?(?:\/[^"']+)?["']/, observation: "bcrypt(js) import" },
+  { pattern: /from\s+["']next-auth(?:\/[^"']+)?["']/, observation: "next-auth import" },
+  { pattern: /from\s+["']@auth\/[^"']+["']/, observation: "@auth import" },
+  { pattern: /from\s+["']better-auth(?:\/[^"']+)?["']/, observation: "better-auth import" },
+  { pattern: /from\s+["']@better-auth\/[^"']+["']/, observation: "@better-auth import" },
+  { pattern: /from\s+["']@clerk\/[^"']+["']/, observation: "@clerk import" },
+  { pattern: /from\s+["']@supabase\/[^"']+["']/, observation: "@supabase import" },
+  { pattern: /from\s+["']@workos-inc\/[^"']+["']/, observation: "@workos-inc import" },
+  { pattern: /from\s+["']@kinde-oss\/[^"']+["']/, observation: "@kinde-oss import" },
+  { pattern: /from\s+["']@stackframe\/[^"']+["']/, observation: "Stack Auth (@stackframe) import" },
+  { pattern: /from\s+["']arctic(?:\/[^"']+)?["']/, observation: "arctic OAuth import" },
+  { pattern: /from\s+["']oslo(?:\/[^"']+)?["']/, observation: "oslo crypto/auth utils import" },
+];
+
+const RISKY_PACKAGES: ReadonlyArray<{ readonly name: string; readonly observation: string }> = [
+  { name: "moment", observation: "Deprecated by maintainer; switch to date-fns or dayjs" },
+  { name: "request", observation: "Deprecated since 2020 with unpatched vulnerabilities" },
+  { name: "node-fetch", observation: "Native fetch available in Node 18+" },
+  { name: "jsonwebtoken", observation: "Manual JWT handling is error-prone; prefer jose" },
+  { name: "sequelize", observation: "Limited TypeScript support; Prisma/Drizzle stronger" },
+  { name: "gulp", observation: "Legacy tooling; modern bundlers are faster" },
+  { name: "colors", observation: "Sabotaged in v1.4.1; verify pinned version" },
+  { name: "faker", observation: "Original `faker` is abandoned; switch to @faker-js/faker" },
+  { name: "bluebird", observation: "Native Promises are sufficient; legacy overhead" },
+  { name: "tslint", observation: "Deprecated by Palantir; switch to typescript-eslint" },
+  { name: "node-uuid", observation: "Renamed; use the `uuid` package" },
+  { name: "node-sass", observation: "LibSass end-of-life; switch to `sass` (Dart Sass)" },
+  { name: "crypto-js", observation: "Maintenance discontinued; prefer native node:crypto or @noble/*" },
+  { name: "event-stream", observation: "Compromised in 2018 via flatmap-stream supply-chain attack; abandoned" },
+  { name: "flatmap-stream", observation: "Malicious payload from the 2018 event-stream incident" },
+  { name: "node-ipc", observation: "CVE-2022-23812 maintainer-introduced destructive protestware; trust break" },
+  { name: "q", observation: "Maintainer recommends native Promises; last release 8+ years ago" },
+];
+
+async function runSaasSmellsScan(rootDir: string): Promise<SaasSmellsReport> {
+  const smells: Smell[] = [];
+  const notes: string[] = [];
+
+  const allFiles = await collectFiles(rootDir);
+  const codeFiles = allFiles.filter((f) => /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(f));
+
+  for (const rel of codeFiles) {
+    const abs = path.join(rootDir, rel.split("/").join(path.sep));
+    let lines: string[] = [];
+    try {
+      lines = await readFirstLines(abs, SMELL_SCAN_LIMIT);
+    } catch {
+      continue;
+    }
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      const trimmed = line.trimStart();
+      const isCommentLine = trimmed.startsWith("//") || trimmed.startsWith("*");
+      const snippet = line.trim().slice(0, 120);
+
+      if (!isCommentLine) {
+        for (const check of SECURITY_PATTERNS) {
+          if (check.pattern.test(line)) {
+            smells.push({ category: "security", file: rel, line: i + 1, observation: check.observation, snippet });
+          }
+        }
+        for (const check of BILLING_PATTERNS) {
+          if (check.pattern.test(line)) {
+            smells.push({ category: "billing", file: rel, line: i + 1, observation: check.observation, snippet });
+          }
+        }
+        for (const check of AUTH_PATTERNS) {
+          if (check.pattern.test(line)) {
+            smells.push({ category: "auth", file: rel, line: i + 1, observation: check.observation, snippet });
+          }
+        }
+      }
+      for (const check of DEBT_PATTERNS) {
+        if (check.pattern.test(line)) {
+          smells.push({ category: check.category, file: rel, line: i + 1, observation: check.observation, snippet });
+        }
+      }
+    }
+  }
+
+  const pkgPath = path.join(rootDir, "package.json");
+  try {
+    const raw = await readFile(pkgPath, "utf8");
+    const pkg = JSON.parse(raw) as Record<string, unknown>;
+    const deps = (pkg["dependencies"] as Record<string, string> | undefined) ?? {};
+    const devDeps = (pkg["devDependencies"] as Record<string, string> | undefined) ?? {};
+    for (const [name, version] of Object.entries({ ...deps, ...devDeps })) {
+      for (const risky of RISKY_PACKAGES) {
+        if (name === risky.name || name.startsWith(`${risky.name}/`)) {
+          smells.push({
+            category: "dependency-risk",
+            file: "package.json",
+            line: null,
+            observation: `${risky.observation} (currently ${name}@${version})`,
+            snippet: `${name}@${version}`,
+          });
+        }
+      }
+    }
+  } catch {
+    notes.push("Could not read package.json — dependency-risk smells skipped.");
+  }
+
+  const byCategory: Record<SmellCategory, number> = {
+    billing: 0,
+    auth: 0,
+    security: 0,
+    "type-safety": 0,
+    "debt-marker": 0,
+    "dependency-risk": 0,
+  };
+  for (const s of smells) byCategory[s.category]++;
+
+  smells.sort((a, b) =>
+    a.category.localeCompare(b.category) ||
+    a.file.localeCompare(b.file) ||
+    (a.line ?? 0) - (b.line ?? 0)
+  );
+
+  notes.push(
+    `Smells are presence observations only — no scoring, no severity ranking, no hour estimates. You decide what matters.`,
+    `Per-file line cap: ${SMELL_SCAN_LIMIT} lines. Issues past that line in any single file are not scanned by this pass.`
+  );
+
+  return {
+    rootDir: toPosix(rootDir),
+    lineCapPerFile: SMELL_SCAN_LIMIT,
+    totalSmells: smells.length,
+    byCategory,
+    smells,
+    notes,
+  };
+}
+
+
+const server = new McpServer(
+  {
+    name: MCP_SERVER_NAME,
+    version: MCP_SERVER_VERSION,
+  },
+  {
+    instructions: [
+      "context-ops-mcp gives an AI coding agent a bounded map of an unfamiliar TypeScript SaaS repo.",
+      "All tools are heuristic — regex over file heads, filename rules, and one whole-file streaming pass in the relevance ranker. No AST. No type checker. No call graph.",
+      "Default workflow: 1) get_project_structure → 2) get_likely_config_files + get_entry_points → 3) get_semantic_summary (top 50 lines per file) → 4) get_relevant_files_for_task → 5) get_execution_plan_for_task → 6) get_risky_files + get_saas_smells before edits.",
+      "get_saas_smells is observation-only. It reports billing/auth/security/debt/dependency presence checks with file+line. It does not score, rank by severity, or estimate hours. Treat its output as smells to confirm, not as audits.",
+      "Path outputs are POSIX-normalized. Tool outputs are JSON text blocks.",
+    ].join(" "),
+  }
+);
 
 server.registerTool(
   "get_project_structure",
@@ -903,7 +1207,7 @@ server.registerTool(
   "get_relevant_files_for_task",
   {
     description:
-      "Given a short task description, returns up to 10 ranked .ts files using filename/path, exports, key functions, and keyword overlap on the first 50 lines (no AI).",
+      "Given a short task description, returns up to 10 ranked .ts files. Scoring uses filename/path, exports, and key functions extracted from the first 50 lines, plus a whole-file streaming pass that catches keyword presence past the head (no AI).",
     inputSchema: {
       task: z.string().min(1).describe("Short natural-language coding task (e.g. what you want to change or investigate)"),
       rootDir: z
@@ -929,7 +1233,7 @@ server.registerTool(
   "get_execution_plan_for_task",
   {
     description:
-      "Given a task string, merges entry-point hints, ranked relevant .ts files, and risky file list into a suggested step order (inspect → first modify candidate → further reads) plus an avoid/caution list from risk heuristics.",
+      "Given a task string, merges entry-point hints, ranked relevant .ts files, and risky file list into a suggested step order (inspect → first modify candidate → further reads) plus an avoid/caution list. Plan steps are capped at 15 prioritized entry points + up to 10 relevance-ranked files; avoid list is capped at 30. The `truncated` field reports total vs shown counts on each side so you know when signal was elided (typical on large monorepos).",
     inputSchema: {
       task: z.string().min(1).describe("Coding task to plan against (same style as get_relevant_files_for_task)"),
       rootDir: z
@@ -1001,393 +1305,47 @@ server.registerTool(
   }
 );
 
-const REVENUE_DIAGNOSIS_SYSTEM = `You are a SaaS revenue analyst. Analyze the codebase and identify the TOP 3 revenue friction points. For each, respond in this exact format:
-
-FRICTION #1
-SEVERITY: [HIGH/MEDIUM/LOW]
-FRICTION POINT: [one sentence]
-WHY IT COSTS MONEY: [one sentence]
-EVIDENCE IN CODE: [file names only, comma separated]
-RECOMMENDED FIX: [one sentence]
-
-FRICTION #2
-SEVERITY: [HIGH/MEDIUM/LOW]
-FRICTION POINT: [one sentence]
-WHY IT COSTS MONEY: [one sentence]
-EVIDENCE IN CODE: [file names only, comma separated]
-RECOMMENDED FIX: [one sentence]
-
-FRICTION #3
-SEVERITY: [HIGH/MEDIUM/LOW]
-FRICTION POINT: [one sentence]
-WHY IT COSTS MONEY: [one sentence]
-EVIDENCE IN CODE: [file names only, comma separated]
-RECOMMENDED FIX: [one sentence]
-
-OVERALL REVENUE HEALTH: [one sentence summary]`;
-
 server.registerTool(
-  "get_revenue_diagnosis",
+  "get_saas_smells",
   {
     description:
-      "Runs entry-point, task-relevance, and risk scans, then asks Claude to name one SaaS revenue friction point from the codebase map. Requires ANTHROPIC_API_KEY.",
+      "Observation-only scan for SaaS-shaped patterns: billing references (stripe/paddle/webhook/...), auth library imports, common security regex hits (eval/innerHTML/hardcoded creds/...), debt markers (TODO/FIXME/HACK/XXX), type-safety suppressions (any/@ts-ignore), and risky dependencies in package.json. Reads up to SMELL_SCAN_LIMIT (500) lines per code file. Returns a flat list of (file, line, category, observation) tuples — no scores, no severity ranking, no hour estimates, no audit framing. Consumer decides what matters.",
     inputSchema: {
-      task: z.string().min(1).describe("Coding task to plan against (same style as get_relevant_files_for_task)"),
       rootDir: z
         .string()
         .optional()
         .describe("Absolute path to target project root. Defaults to process.cwd()"),
     },
   },
-  async ({ task, rootDir }) => {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    console.error("DEBUG KEY:", process.env.ANTHROPIC_API_KEY ? "FOUND" : "NOT FOUND");
-    console.error("DEBUG ENV KEYS:", Object.keys(process.env).filter((k) => k.includes("ANTHROPIC")));
-    if (!apiKey) {
-      return {
-        content: [{ type: "text", text: "Error: ANTHROPIC_API_KEY is not set." }],
-      };
-    }
-
-    const targetDir = rootDir ?? process.cwd();
-    const [entryResult, relevantResult, _riskyResult] = await Promise.all([
-      runFindEntryPoints(targetDir),
-      runFindRelevantFilesForTask(targetDir, task),
-      runFindRiskyFiles(targetDir),
-    ]);
-
-    const { readFirstLinesCached: readFirstLines } = await import("./analyzer.js");
-    const fileContents: string[] = [];
-    const topFiles = relevantResult.relevantFiles.slice(0, 5);
-    for (const rf of topFiles) {
-      const abs = path.join(targetDir, rf.file.split("/").join(path.sep));
-      try {
-        const lines = await readFirstLines(abs, 150);
-        fileContents.push(`=== ${rf.file} ===\n${lines.join("\n")}`);
-      } catch {
-        fileContents.push(`=== ${rf.file} === (unreadable)`);
-      }
-    }
-
-    const entryLines = entryResult.entryPoints.map((e) => `- ${e.file}: ${e.reason}`).join("\n");
-    const relevantLines = relevantResult.relevantFiles
-      .map((r) => `- ${r.file}: ${r.reason}`)
-      .join("\n");
-
-    const diagnosisPrompt = [
-      `Task: ${task}`,
-      "",
-      "Entry points:",
-      entryLines.length > 0 ? entryLines : "(none)",
-      "",
-      "Relevant files:",
-      relevantLines.length > 0 ? relevantLines : "(none)",
-      "",
-      "File contents (first 150 lines each):",
-      fileContents.length > 0 ? fileContents.join("\n\n") : "(none)",
-    ].join("\n");
-
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-5",
-        max_tokens: 2048,
-        system: REVENUE_DIAGNOSIS_SYSTEM,
-        messages: [{ role: "user", content: diagnosisPrompt }],
-      }),
-    });
-
-    if (!res.ok) {
-      const errBody = await res.text();
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Anthropic API error ${res.status}: ${errBody}`,
-          },
-        ],
-      };
-    }
-
-    const data = (await res.json()) as {
-      content?: Array<{ type: string; text?: string }>;
-    };
-    const textBlock = data.content?.find((b) => b.type === "text");
-    const text = textBlock?.text ?? "Error: No text content in API response.";
-
+  async ({ rootDir }) => {
+    const result = await runSaasSmellsScan(rootDir ?? process.cwd());
     return {
-      content: [{ type: "text", text }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
     };
   }
 );
 
-server.registerTool(
-  "get_billing_audit",
-  {
-    description:
-      "Scans the codebase for billing and payment code. Reports: billing files found, payment provider detected, paywall enforcement gaps, and missing billing best practices. Requires no API key.",
-    inputSchema: {
-      rootDir: z
-        .string()
-        .optional()
-        .describe("Absolute path to target project root. Defaults to process.cwd()"),
-    },
-  },
-  async ({ rootDir }) => {
-    const targetDir = rootDir ?? process.cwd();
-    const { readFirstLinesCached: readFirstLines } = await import("./analyzer.js");
+/** Programmatic equivalent of the saas-smells tool (when not connected via stdio). */
+export async function findSaasSmells(rootDir: string): Promise<SaasSmellsReport> {
+  return runSaasSmellsScan(rootDir);
+}
 
-    const BILLING_KEYWORDS = [
-      "stripe",
-      "lemon",
-      "paddle",
-      "billing",
-      "subscription",
-      "payment",
-      "checkout",
-      "invoice",
-      "plan",
-      "pricing",
-      "webhook",
-      "upgrade",
-      "paywall",
-      "trial",
-      "cancel",
-    ];
+/** Programmatic equivalents of MCP tools (when not connected via stdio). */
+export async function findRelevantFilesForTask(
+  rootDir: string,
+  task: string
+): Promise<{ relevantFiles: RelevantFileRow[] }> {
+  return runFindRelevantFilesForTask(rootDir, task);
+}
 
-    const allFiles = await collectFiles(targetDir);
-    const billingFiles: Array<{ file: string; hits: string[] }> = [];
-
-    for (const f of allFiles) {
-      const abs = path.join(targetDir, f.split("/").join(path.sep));
-      let lines: string[] = [];
-      try {
-        lines = await readFirstLines(abs, 300);
-      } catch {
-        continue;
-      }
-      const content = lines.join("\n").toLowerCase();
-      const hits = BILLING_KEYWORDS.filter((k) => content.includes(k));
-      if (hits.length > 0) billingFiles.push({ file: f, hits });
-    }
-
-    const provider = billingFiles.some((bf) => bf.hits.includes("stripe"))
-      ? "Stripe"
-      : billingFiles.some((bf) => bf.hits.includes("lemon"))
-        ? "Lemon Squeezy"
-        : billingFiles.some((bf) => bf.hits.includes("paddle"))
-          ? "Paddle"
-          : "Unknown";
-
-    const hasWebhook = billingFiles.some((bf) => bf.hits.includes("webhook"));
-    const hasPaywall = billingFiles.some(
-      (bf) => bf.hits.includes("paywall") || bf.hits.includes("plan")
-    );
-    const hasTrial = billingFiles.some((bf) => bf.hits.includes("trial"));
-
-    const gaps: string[] = [];
-    if (!hasWebhook) gaps.push("⚠️  No webhook handler found — subscription events may be missed");
-    if (!hasPaywall) gaps.push("⚠️  No paywall enforcement detected — paid features may be exposed");
-    if (!hasTrial) gaps.push("⚠️  No trial logic found — missing conversion opportunity");
-
-    const report = [
-      `BILLING AUDIT REPORT`,
-      `====================`,
-      `Payment Provider: ${provider}`,
-      `Billing Files Found: ${billingFiles.length}`,
-      ``,
-      `FILES:`,
-      ...billingFiles.map((bf) => `  ${bf.file} [${bf.hits.join(", ")}]`),
-      ``,
-      `GAPS:`,
-      ...(gaps.length > 0 ? gaps : ["✅ No critical gaps detected"]),
-    ].join("\n");
-
-    return { content: [{ type: "text", text: report }] };
-  }
-);
-
-server.registerTool(
-  "get_onboarding_friction",
-  {
-    description:
-      "Analyzes user onboarding flow in the codebase. Identifies steps between signup and first value, detects missing loading states, error handling gaps, and redirect logic issues.",
-    inputSchema: {
-      rootDir: z
-        .string()
-        .optional()
-        .describe("Absolute path to target project root. Defaults to process.cwd()"),
-    },
-  },
-  async ({ rootDir }) => {
-    const targetDir = rootDir ?? process.cwd();
-    const { readFirstLinesCached: readFirstLines } = await import("./analyzer.js");
-
-    const ONBOARDING_KEYWORDS = [
-      "signup",
-      "sign-up",
-      "register",
-      "onboard",
-      "welcome",
-      "redirect",
-      "loading",
-      "spinner",
-      "error",
-      "toast",
-      "first",
-      "setup",
-      "wizard",
-      "step",
-      "complete",
-    ];
-
-    const allFiles = await collectFiles(targetDir);
-    const onboardingFiles: Array<{ file: string; hits: string[]; snippet: string }> = [];
-
-    for (const f of allFiles) {
-      const abs = path.join(targetDir, f.split("/").join(path.sep));
-      let lines: string[] = [];
-      try {
-        lines = await readFirstLines(abs, 300);
-      } catch {
-        continue;
-      }
-      const content = lines.join("\n").toLowerCase();
-      const hits = ONBOARDING_KEYWORDS.filter((k) => content.includes(k));
-      if (hits.length >= 2) {
-        onboardingFiles.push({
-          file: f,
-          hits,
-          snippet: lines.slice(0, 10).join("\n"),
-        });
-      }
-    }
-
-    const hasLoading = onboardingFiles.some(
-      (of) => of.hits.includes("loading") || of.hits.includes("spinner")
-    );
-    const hasErrorHandling = onboardingFiles.some(
-      (of) => of.hits.includes("error") || of.hits.includes("toast")
-    );
-    const hasRedirect = onboardingFiles.some((of) => of.hits.includes("redirect"));
-    const stepCount = onboardingFiles.filter(
-      (of) => of.hits.includes("step") || of.hits.includes("wizard")
-    ).length;
-
-    const issues: string[] = [];
-    if (!hasLoading) issues.push("⚠️  No loading states in onboarding — users may see blank screens");
-    if (!hasErrorHandling) issues.push("⚠️  No error feedback in onboarding — silent failures lose users");
-    if (!hasRedirect) issues.push("⚠️  No redirect logic found — users may be lost after signup");
-    if (stepCount > 3)
-      issues.push(`⚠️  ${stepCount} onboarding steps detected — consider reducing friction`);
-
-    const report = [
-      `ONBOARDING FRICTION REPORT`,
-      `==========================`,
-      `Onboarding Files Found: ${onboardingFiles.length}`,
-      `Multi-step Flow: ${stepCount > 0 ? `Yes (${stepCount} steps)` : "No"}`,
-      `Has Loading States: ${hasLoading ? "✅" : "❌"}`,
-      `Has Error Handling: ${hasErrorHandling ? "✅" : "❌"}`,
-      `Has Redirect Logic: ${hasRedirect ? "✅" : "❌"}`,
-      ``,
-      `FILES:`,
-      ...onboardingFiles.map((of) => `  ${of.file} [${of.hits.join(", ")}]`),
-      ``,
-      `ISSUES:`,
-      ...(issues.length > 0 ? issues : ["✅ No critical onboarding issues detected"]),
-    ].join("\n");
-
-    return { content: [{ type: "text", text: report }] };
-  }
-);
-
-server.registerTool(
-  "get_competitive_gaps",
-  {
-    description:
-      "Compares the codebase against SaaS best practices checklist. Returns a scored gap report: what is present, what is missing, and a READINESS score out of 100.",
-    inputSchema: {
-      rootDir: z
-        .string()
-        .optional()
-        .describe("Absolute path to target project root. Defaults to process.cwd()"),
-      format: z
-        .enum(["text", "json"])
-        .optional()
-        .default("text")
-        .describe("Output format. 'json' returns structured data."),
-    },
-  },
-  async ({ rootDir, format }) => {
-    const targetDir = rootDir ?? process.cwd();
-    const { readFirstLinesCached: readFirstLines } = await import("./analyzer.js");
-    const allFiles = await collectFiles(targetDir);
-
-    const CHECKLIST: Array<{ id: string; label: string; keywords: string[]; weight: number }> = [
-      { id: "auth", label: "Authentication", keywords: ["auth", "login", "session", "jwt", "cookie"], weight: 15 },
-      { id: "billing", label: "Billing / Payments", keywords: ["stripe", "lemon", "paddle", "subscription", "plan"], weight: 15 },
-      { id: "error", label: "Error Handling", keywords: ["error", "catch", "toast", "sentry", "logger"], weight: 10 },
-      { id: "loading", label: "Loading States", keywords: ["loading", "spinner", "skeleton", "suspense"], weight: 10 },
-      { id: "ratelimit", label: "Rate Limiting", keywords: ["ratelimit", "rate-limit", "throttle", "limiter"], weight: 10 },
-      { id: "analytics", label: "Analytics / Tracking", keywords: ["analytics", "posthog", "mixpanel", "segment", "gtag"], weight: 10 },
-      { id: "email", label: "Email / Notifications", keywords: ["email", "resend", "sendgrid", "nodemailer", "smtp"], weight: 10 },
-      { id: "tests", label: "Tests", keywords: ["test", "spec", "jest", "vitest", "describe"], weight: 10 },
-      { id: "envconfig", label: "Env / Config", keywords: [".env", "process.env", "dotenv", "config"], weight: 5 },
-      { id: "docs", label: "Documentation", keywords: ["readme", "docs", "changelog", "contributing"], weight: 5 },
-    ];
-
-    const allContent = new Map<string, string>();
-    for (const f of allFiles) {
-      const abs = path.join(targetDir, f.split("/").join(path.sep));
-      try {
-        const lines = await readFirstLines(abs, 300);
-        allContent.set(f, lines.join("\n").toLowerCase());
-      } catch {
-        /* skip */
-      }
-    }
-    const combinedContent = [...allContent.values()].join("\n");
-
-    const results = CHECKLIST.map((item) => {
-      const found = item.keywords.some((k) => combinedContent.includes(k));
-      return { ...item, found };
-    });
-
-    const score = results.reduce((sum, r) => sum + (r.found ? r.weight : 0), 0);
-    const present = results.filter((r) => r.found);
-    const missing = results.filter((r) => !r.found);
-
-    if (format === "json") {
-      const output = {
-        readiness_score: score,
-        present: present.map((r) => ({ id: r.id, label: r.label, weight: r.weight })),
-        missing: missing.map((r) => ({ id: r.id, label: r.label, weight: r.weight })),
-      };
-      return { content: [{ type: "text", text: JSON.stringify(output, null, 2) }] };
-    }
-
-    const lines = [
-      `COMPETITIVE GAPS REPORT`,
-      `=======================`,
-      `READINESS SCORE: ${score}/100`,
-      ``,
-      `✅ PRESENT (${present.length}):`,
-      ...present.map((r) => `  [+${r.weight}] ${r.label}`),
-      ``,
-      `❌ MISSING (${missing.length}):`,
-      ...missing.map((r) => `  [-${r.weight}] ${r.label}`),
-      ``,
-      `PRIORITY FIX: ${missing.sort((a, b) => b.weight - a.weight)[0]?.label ?? "None — fully ready!"}`,
-    ];
-
-    return { content: [{ type: "text", text: lines.join("\n") }] };
-  }
-);
+export async function findRiskyFiles(rootDir: string): Promise<{ riskyFiles: RiskyFileRow[] }> {
+  return runFindRiskyFiles(rootDir);
+}
 
 /** Connected MCP server (tools registered). */
 export { server };

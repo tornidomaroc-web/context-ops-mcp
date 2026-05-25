@@ -1,148 +1,73 @@
 <div align="center">
 
-<img src="https://capsule-render.vercel.app/api?type=waving&amp;color=0:0a0a0a,50:064e3b,100:10b981&amp;height=160&amp;section=header&amp;text=ContextOps%20MCP&amp;fontSize=48&amp;fontColor=ffffff&amp;fontAlignY=40&amp;desc=Revenue-aware%20repo%20context%20for%20AI%20agents&amp;descAlignY=62&amp;descColor=6ee7b7&amp;animation=fadeIn" width="100%"/>
+<img src="https://capsule-render.vercel.app/api?type=waving&amp;color=0:0a0a0a,50:064e3b,100:10b981&amp;height=160&amp;section=header&amp;text=ContextOps%20MCP&amp;fontSize=48&amp;fontColor=ffffff&amp;fontAlignY=40&amp;desc=Bounded%20repo%20map%20for%20AI%20coding%20agents&amp;descAlignY=62&amp;descColor=6ee7b7&amp;animation=fadeIn" width="100%"/>
 
 <br/>
 
 [![npm](https://img.shields.io/npm/v/context-ops-mcp?color=10b981&style=for-the-badge&logo=npm&logoColor=white)](https://www.npmjs.com/package/context-ops-mcp)
 [![downloads](https://img.shields.io/npm/dm/context-ops-mcp?color=064e3b&style=for-the-badge&logo=npm&logoColor=white)](https://www.npmjs.com/package/context-ops-mcp)
 [![Claude AI](https://img.shields.io/badge/MCP%20Compatible-Claude-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](https://anthropic.com)
-[![TypeScript](https://img.shields.io/badge/TypeScript-100%25-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://github.com/tornidomaroc-web/context-ops-mcp)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Beta](https://img.shields.io/badge/Status-Beta-BA7517?style=for-the-badge)](https://github.com/tornidomaroc-web/context-ops-mcp)
+[![license](https://img.shields.io/github/license/tornidomaroc-web/context-ops-mcp?style=for-the-badge)](./LICENSE)
 
 </div>
 
 ---
 
-> **MCP server that gives your AI agent a structured, revenue-aware view of any SaaS codebase — in seconds.**
+# context-ops-mcp
 
-[![license](https://img.shields.io/github/license/tornidomaroc-web/context-ops-mcp)](./LICENSE)
+> Gives your AI coding agent a bounded map of an unfamiliar TypeScript SaaS repo: where the code lives, what's risky to touch, and where the money / auth / user flows are. Without burning your context window on full-file reads.
 
----
+Built for the agency, fractional-CTO, or consultancy dev lead who just inherited a TypeScript SaaS codebase and needs to go from zero to a credible map in one afternoon, inside Cursor or Claude Code.
 
-## The problem
+## What it does
 
-Your AI agent reads files blindly.  
-It wastes tokens. It misses billing logic. It touches risky files without knowing.
+Eight MCP tools your agent calls locally. All heuristic. Regex over file heads, filename rules, and one whole-file streaming pass in the relevance ranker. No AST. No type checker. No call graph.
 
-SaaS founders lose hours every week to agents that don't understand **which files matter** for revenue, onboarding, and growth.
+- **Orientation:** structure, top-of-file symbol hints, entry points, config files
+- **Task focus:** ranked candidate files for a task string, plus a step-ordered plan
+- **Risk:** files that often deserve extra care before edits
+- **SaaS smells:** observation-only flags for billing, auth, security patterns, debt markers, and risky deps
 
----
+## MCP tools exposed
 
-## What context-ops-mcp does
+| Tool | What it returns |
+|------|------------------|
+| `get_project_structure` | Sorted POSIX paths of directories and files (skips node_modules, .git, dist, .next, .turbo, build, out, coverage, .svelte-kit, .vercel, .cache) |
+| `get_semantic_summary` | First 50 lines of every .ts and .json file: detected exports, key functions, JSON top-level keys |
+| `get_entry_points` | .ts files that look like bootstrap or route registration (filenames, folder hints, framework imports) |
+| `get_relevant_files_for_task` | Up to 10 .ts files ranked against a task string (path, exports, key functions, plus a whole-file keyword pass) |
+| `get_execution_plan_for_task` | Step-ordered list: inspect entries first, then a modify candidate, then supporting reads, plus an avoid list |
+| `get_risky_files` | .ts files matching risky path segments, process.env, DB/auth imports, or startup patterns |
+| `get_likely_config_files` | Manifests, tsconfig, .env, build/CI/tooling configs (filename pattern match, not content validation) |
+| `get_saas_smells` | Observation-only scan (up to 500 lines per code file): billing keywords, auth imports, security regex hits, TODO/FIXME/HACK/XXX, any/@ts-ignore, risky deps from package.json. No scores. No severity ranking. No hour estimates. |
 
-`context-ops-mcp` is a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server.  
-It connects to Claude, Cursor, or any MCP-compatible agent and gives it a **token-aware, structured map** of your repository — instantly.
+## What it will not claim
 
-No full indexer. No cloud sync. No setup beyond `npx`.
+- Not an audit, diagnosis, or analysis. The smell tool returns presence checks, not verdicts.
+- No /100 scores. No hour estimates on remediation.
+- No UI-layer claims. This reads code structure, not UX or conversion.
+- No AST, type-checker, or call-graph promises.
+- A determined engineer rebuilds the orientation core in an afternoon with `grep` and `tree`. The differentiator is MCP wiring, task-string ranking, and prose-narrated read order, not capability you cannot have.
 
----
+## Stack
 
-## Who it's for
-
-- **SaaS founders** who use AI coding agents daily
-- **Indie hackers** building on Claude Code, Cursor, or Windsurf
-- **Developers** who want their agent to understand project structure without reading every file
-
----
-
-## Install
-
-```bash
-npx context-ops-mcp
-```
-
-Or globally:
-
-```bash
-npm install -g context-ops-mcp
-```
-
----
-
-## Quick start (Claude Code)
-
-Add this to your Claude MCP config:
-
-```json
-{
-  "mcpServers": {
-    "context-ops": {
-      "command": "npx",
-      "args": ["-y", "context-ops-mcp"],
-      "cwd": "/path/to/your/project"
-    }
-  }
-}
-```
-
-Restart your agent. Done.
-
----
-
-## Tools
-
-| Tool | What it gives your agent |
-|---|---|
-| `get_project_structure` | Full repo map — directories and files, skipping noise (`node_modules`, `.git`, `dist`) |
-| `get_semantic_summary` | Surface-level exports, functions, and JSON keys from every `.ts` file |
-| `get_entry_points` | Flags wiring files, HTTP handlers, bootstrap points — where your app starts |
-| `get_relevant_files_for_task` | Ranks files by relevance to a task — the agent reads less, ships faster |
-| `get_risky_files` | Detects high-impact files: auth, DB, env, payment logic — before your agent touches them |
-| `get_likely_config_files` | Lists all config, CI, env, and build files by convention |
-
----
-
-## Why SaaS founders use it
-
-Your agent now knows:
-
-- **Where billing logic lives** — so it doesn't break it accidentally
-- **Which files are risky** — auth, DB, payments — before making changes
-- **What's relevant to this task** — so it stops wasting your context window
-
-Less token waste. Less risk. Faster shipping.
-
----
-
-## Requirements
-
-- Node.js 18+
-- Any MCP-compatible client: Claude Code, Cursor, Windsurf, Cline
-
----
+`TypeScript` · `MCP SDK` · `Node.js` · stdio transport
 
 ## Run locally
 
 ```bash
 npm install
+npm run build
 npm run start
 ```
 
-The server uses **stdio** transport. Set `cwd` to the project you want analyzed.
+Wire it into Cursor or Claude Code as a local MCP server (stdio). No API keys required.
 
----
+## Built by
 
-## Limitations (honest ones)
-
-- **Heuristic-based** — pattern matching, not a full AST or type graph
-- **50-line cap** — semantic tools only inspect the first 50 lines per file
-- **TypeScript-first** — other languages get minimal treatment
-- **Not a replacement** for tests, code review, or IDE intelligence
-
-ContextOps is a navigation tool, not an oracle.
-
----
-
-## Keywords
-
-`mcp` · `model-context-protocol` · `claude` · `cursor` · `ai-agent` · `saas` · `developer-tools` · `context-window` · `codebase-analysis` · `revenue` · `billing` · `typescript`
-
----
-
-## License
-
-MIT © [tornidomaroc-web](https://github.com/tornidomaroc-web)
+[AboJad](https://github.com/tornidomaroc-web), Full Stack AI Engineer, Marrakesh
 
 <div align="center">
 <img src="https://capsule-render.vercel.app/api?type=waving&amp;color=0:0a0a0a,50:064e3b,100:10b981&amp;height=100&amp;section=footer&amp;animation=fadeIn" width="100%"/>

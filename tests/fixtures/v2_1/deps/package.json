@@ -1,0 +1,15 @@
+{
+  "name": "v2-1-deps-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "tslint": "^6.1.3",
+    "node-uuid": "^1.4.0",
+    "node-sass": "^9.0.0",
+    "crypto-js": "^4.2.0",
+    "event-stream": "^3.3.4",
+    "flatmap-stream": "^0.1.0",
+    "node-ipc": "^10.1.0",
+    "q": "^1.5.1"
+  }
+}

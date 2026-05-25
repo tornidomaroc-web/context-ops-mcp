@@ -1,0 +1,10 @@
+* text=auto eol=lf
+*.md text eol=lf
+*.ts text eol=lf
+*.mts text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Generated artifacts treated as binary for diff sanity
+package-lock.json -diff

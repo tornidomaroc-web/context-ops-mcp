@@ -1,5 +1,28 @@
 node_modules/
 dist/
+
+# Env files. .env.example IS committed (template, placeholder values).
 .env
-.env.local
+.env.*
+!.env.example
+
+# Editor/IDE
 .cursor/
+.vscode/
+.idea/
+
+# Internal strategy / audit docs kept local. The CHANGELOG covers all
+# user-facing changes; the docs/ folder is engineering history
+# (STATE_REPORT, UNIFIED_NARRATIVE, MERGE_AUDIT, PUBLISH_REPORT, V2_1_AUDIT)
+# plus references to external smoke-test repos. Not for the public repo.
+docs/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Scratch / temp scripts (we delete these but belt-and-braces)
+scripts/_*.mts
+scripts/_*.ts
+*.tmp
+*.log
