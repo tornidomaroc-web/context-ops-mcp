@@ -65,11 +65,24 @@ export async function buildSemanticSummary(rootDir: string): Promise<SemanticSum
   return runBuildSemanticSummary(rootDir);
 }
 
-function runScanProjectStructure(rootDir: string): Promise<ProjectStructure> {
-  const directories: string[] = [];
-  const files: string[] = [];
+/** One entry yielded by {@link walkTree}. `rel` uses the platform path
+ * separator; callers POSIX-normalize as needed. */
+type WalkEntry = {
+  rel: string;
+  name: string;
+  isDir: boolean;
+  isFile: boolean;
+};
 
-  async function walk(absDir: string, relPrefix: string): Promise<void> {
+/**
+ * Single source of truth for the recursive, IGNORED_DIRS-aware directory walk
+ * shared by every scanner. Yields each visited child: non-ignored directories
+ * (then recurses into them) and every non-directory entry. Callers apply their
+ * own file-type/extension predicate and path normalization. Traversal order is
+ * unspecified — every caller sorts its own result, so order here is irrelevant.
+ */
+async function* walkTree(rootDir: string): AsyncGenerator<WalkEntry> {
+  async function* recurse(absDir: string, relPrefix: string): AsyncGenerator<WalkEntry> {
     const entries = await readdir(absDir, { withFileTypes: true });
     for (const entry of entries) {
       const rel = relPrefix ? path.join(relPrefix, entry.name) : entry.name;
@@ -77,16 +90,26 @@ function runScanProjectStructure(rootDir: string): Promise<ProjectStructure> {
 
       if (entry.isDirectory()) {
         if (IGNORED_DIRS.has(entry.name)) continue;
-        directories.push(toPosix(rel));
-        await walk(abs, rel);
+        yield { rel, name: entry.name, isDir: true, isFile: false };
+        yield* recurse(abs, rel);
       } else {
-        files.push(toPosix(rel));
+        yield { rel, name: entry.name, isDir: false, isFile: entry.isFile() };
       }
     }
   }
+  yield* recurse(rootDir, "");
+}
 
+function runScanProjectStructure(rootDir: string): Promise<ProjectStructure> {
   return (async () => {
-    await walk(rootDir, "");
+    const directories: string[] = [];
+    const files: string[] = [];
+    // Note: any non-directory entry (not just regular files) counts as a file
+    // here — this scanner deliberately has no isFile() guard, unlike the others.
+    for await (const entry of walkTree(rootDir)) {
+      if (entry.isDir) directories.push(toPosix(entry.rel));
+      else files.push(toPosix(entry.rel));
+    }
     directories.sort();
     files.sort();
     return {
@@ -98,31 +121,18 @@ function runScanProjectStructure(rootDir: string): Promise<ProjectStructure> {
 }
 
 function runCollectTsAndJsonFiles(rootDir: string): Promise<string[]> {
-  const out: string[] = [];
-
-  async function walk(absDir: string, relPrefix: string): Promise<void> {
-    const entries = await readdir(absDir, { withFileTypes: true });
-    for (const entry of entries) {
-      const rel = relPrefix ? path.join(relPrefix, entry.name) : entry.name;
-      const abs = path.join(absDir, entry.name);
-
-      if (entry.isDirectory()) {
-        if (IGNORED_DIRS.has(entry.name)) continue;
-        await walk(abs, rel);
-      } else if (entry.isFile()) {
-        if (
-          entry.name.endsWith(".ts") ||
+  return (async () => {
+    const out: string[] = [];
+    for await (const entry of walkTree(rootDir)) {
+      if (
+        entry.isFile &&
+        (entry.name.endsWith(".ts") ||
           entry.name.endsWith(".tsx") ||
-          entry.name.endsWith(".json")
-        ) {
-          out.push(toPosix(rel));
-        }
+          entry.name.endsWith(".json"))
+      ) {
+        out.push(toPosix(entry.rel));
       }
     }
-  }
-
-  return (async () => {
-    await walk(rootDir, "");
     out.sort();
     return out;
   })();
@@ -134,28 +144,13 @@ const SERVER_FOLDER_PARTS = new Set(["routes", "api", "controllers"]);
 type EntryPointRow = { file: string; reason: string };
 
 function runCollectTsFiles(rootDir: string): Promise<string[]> {
-  const out: string[] = [];
-
-  async function walk(absDir: string, relPrefix: string): Promise<void> {
-    const entries = await readdir(absDir, { withFileTypes: true });
-    for (const entry of entries) {
-      const rel = relPrefix ? path.join(relPrefix, entry.name) : entry.name;
-      const abs = path.join(absDir, entry.name);
-
-      if (entry.isDirectory()) {
-        if (IGNORED_DIRS.has(entry.name)) continue;
-        await walk(abs, rel);
-      } else if (
-        entry.isFile() &&
-        (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx"))
-      ) {
-        out.push(toPosix(rel));
+  return (async () => {
+    const out: string[] = [];
+    for await (const entry of walkTree(rootDir)) {
+      if (entry.isFile && (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx"))) {
+        out.push(toPosix(entry.rel));
       }
     }
-  }
-
-  return (async () => {
-    await walk(rootDir, "");
     out.sort();
     return out;
   })();
@@ -808,24 +803,13 @@ function classifyConfigReasons(posixPath: string): string[] {
 }
 
 async function runFindLikelyConfigFiles(rootDir: string): Promise<{ configFiles: ConfigFileRow[] }> {
+  // Collected with native separators and sorted before POSIX-normalizing,
+  // preserving this scanner's original ordering (differs from the others,
+  // which sort POSIX-normalized paths).
   const allFiles: string[] = [];
-
-  async function walk(absDir: string, relPrefix: string): Promise<void> {
-    const entries = await readdir(absDir, { withFileTypes: true });
-    for (const entry of entries) {
-      const rel = relPrefix ? path.join(relPrefix, entry.name) : entry.name;
-      const abs = path.join(absDir, entry.name);
-
-      if (entry.isDirectory()) {
-        if (IGNORED_DIRS.has(entry.name)) continue;
-        await walk(abs, rel);
-      } else if (entry.isFile()) {
-        allFiles.push(rel);
-      }
-    }
+  for await (const entry of walkTree(rootDir)) {
+    if (entry.isFile) allFiles.push(entry.rel);
   }
-
-  await walk(rootDir, "");
   allFiles.sort();
 
   const configFiles: ConfigFileRow[] = [];
@@ -847,23 +831,9 @@ async function runFindLikelyConfigFiles(rootDir: string): Promise<{ configFiles:
 /** All relative file paths under root (posix), skipping IGNORED_DIRS. */
 async function collectFiles(rootDir: string): Promise<string[]> {
   const out: string[] = [];
-
-  async function walk(absDir: string, relPrefix: string): Promise<void> {
-    const entries = await readdir(absDir, { withFileTypes: true });
-    for (const entry of entries) {
-      const rel = relPrefix ? path.join(relPrefix, entry.name) : entry.name;
-      const abs = path.join(absDir, entry.name);
-
-      if (entry.isDirectory()) {
-        if (IGNORED_DIRS.has(entry.name)) continue;
-        await walk(abs, rel);
-      } else if (entry.isFile()) {
-        out.push(rel.split(path.sep).join("/"));
-      }
-    }
+  for await (const entry of walkTree(rootDir)) {
+    if (entry.isFile) out.push(toPosix(entry.rel));
   }
-
-  await walk(rootDir, "");
   out.sort();
   return out;
 }
