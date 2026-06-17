@@ -7,20 +7,6 @@ export const SEMANTIC_LINE_LIMIT = 50;
 /** Deeper line cap used by smell scans (security regex, debt markers). */
 export const SMELL_SCAN_LIMIT = 500;
 
-const fileCache = new Map<string, string[]>();
-
-export async function readFirstLinesCached(filePath: string, limit: number): Promise<string[]> {
-  const key = `${filePath}:${limit}`;
-  if (fileCache.has(key)) return fileCache.get(key)!;
-  const lines = await readFirstLines(filePath, limit);
-  fileCache.set(key, lines);
-  return lines;
-}
-
-export function clearFileCache(): void {
-  fileCache.clear();
-}
-
 export type LineAnalysis = {
   exports: string[];
   keyFunctions: string[];
