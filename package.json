@@ -15,7 +15,7 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
     "prepare": "npm run build",
     "test": "node --import tsx --test tests/smoke.test.ts tests/dogfood.test.ts tests/honesty.test.ts tests/v2_1.test.ts"
   },
@@ -35,6 +35,9 @@
   ],
   "author": "AboJad",
   "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/tornidomaroc-web/context-ops-mcp.git"

@@ -13,7 +13,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { findSaasSmells, server } from "../src/server.ts";
+import { findSaasSmells, server } from "../src/server.js";
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(TEST_DIR, "..");
@@ -135,7 +135,7 @@ test("get_execution_plan_for_task caps executionPlan at 25 and avoid at 30 on an
 });
 
 test("MCP_SERVER_VERSION is in sync with package.json after v2.1 bump", async () => {
-  const { MCP_SERVER_VERSION } = await import("../src/server.ts");
+  const { MCP_SERVER_VERSION } = await import("../src/server.js");
   const pkgPath = path.join(REPO_ROOT, "package.json");
   const { readFile } = await import("node:fs/promises");
   const pkg = JSON.parse(await readFile(pkgPath, "utf8")) as { version: string };
